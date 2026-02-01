@@ -82,7 +82,7 @@ const User = mongoose.model('User', userSchema);
 // Product Schema
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
-  type: { type: String, required: true, enum: ['iPhone', 'iPad', 'Mac', 'Airpods', 'Watch'] },
+  type: { type: String, required: true, enum: ['iPhone', 'iPad', 'Mac', 'AirPods', 'Watch'] },
   price: { type: Number, required: true, min: 0 },
   description: { type: String, required: true },
   chipInfo: { type: String, default: '' },
@@ -91,6 +91,41 @@ const productSchema = new mongoose.Schema({
 });
 
 const Product = mongoose.model('Product', productSchema);
+
+// Order Schema
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  guestName: { type: String, default: 'Guest' },
+  products: [{
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    name: String,
+    price: Number,
+    quantity: { type: Number, default: 1 },
+    image: String
+  }],
+  total: { type: Number, required: true },
+  status: { 
+    type: String, 
+    enum: ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled'],
+    default: 'Pending'
+  },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const Order = mongoose.model('Order', orderSchema);
+
+// Bag Schema (for storing user cart items on server)
+const bagItemSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+  productName: String,
+  price: Number,
+  quantity: { type: Number, default: 1 },
+  image: String,
+  addedAt: { type: Date, default: Date.now }
+});
+
+const BagItem = mongoose.model('BagItem', bagItemSchema);
 
 // Middleware to check if user is authenticated
 const requireAuth = (req, res, next) => {
@@ -242,7 +277,7 @@ app.get('/api/products', async (req, res) => {
   try {
     const { type } = req.query;
     const filter = type ? { type } : {};
-    const products = await Product.find(filter).sort({ createdAt: -1 });
+    const products = await Product.find(filter).sort({ createdAt: 1 });
     res.json(products);
   } catch (error) {
     console.error('Error fetching products:', error);
@@ -346,6 +381,133 @@ app.delete('/api/products/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting product:', error);
     res.status(500).json({ error: 'Failed to delete product' });
+  }
+});
+
+// =============================================
+// USER ROUTES (Admin)
+// =============================================
+
+// Get all users
+app.get('/api/users', async (req, res) => {
+  try {
+    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// Delete user
+app.delete('/api/users/:id', async (req, res) => {
+  try {
+    const deletedUser = await User.findByIdAndDelete(req.params.id);
+    
+    if (!deletedUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Also delete user's orders and bag items
+    await Order.deleteMany({ userId: req.params.id });
+    await BagItem.deleteMany({ userId: req.params.id });
+
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+// =============================================
+// ORDER ROUTES (Admin)
+// =============================================
+
+// Get all orders
+app.get('/api/orders', async (req, res) => {
+  try {
+    const orders = await Order.find()
+      .populate('userId', 'username')
+      .sort({ createdAt: -1 });
+    res.json(orders);
+  } catch (error) {
+    console.error('Error fetching orders:', error);
+    res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
+
+// Create new order (checkout)
+app.post('/api/orders', async (req, res) => {
+  try {
+    const { products, total, guestName } = req.body;
+
+    if (!products || products.length === 0) {
+      return res.status(400).json({ error: 'No products in order' });
+    }
+
+    const orderData = {
+      products,
+      total,
+      status: 'Pending',
+      createdAt: new Date()
+    };
+
+    // If user is logged in, attach userId
+    if (req.session.userId) {
+      orderData.userId = req.session.userId;
+    } else {
+      // For guest checkout, store the name
+      orderData.guestName = guestName || 'Guest';
+    }
+
+    const newOrder = new Order(orderData);
+    await newOrder.save();
+
+    res.status(201).json({ 
+      message: 'Order placed successfully!',
+      orderId: newOrder._id
+    });
+  } catch (error) {
+    console.error('Error creating order:', error);
+    res.status(500).json({ error: 'Failed to place order' });
+  }
+});
+
+// Update order status
+app.put('/api/orders/:id', async (req, res) => {
+  try {
+    const { status } = req.body;
+    
+    const updatedOrder = await Order.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedOrder) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    res.json(updatedOrder);
+  } catch (error) {
+    console.error('Error updating order:', error);
+    res.status(500).json({ error: 'Failed to update order' });
+  }
+});
+
+// Delete order
+app.delete('/api/orders/:id', async (req, res) => {
+  try {
+    const deletedOrder = await Order.findByIdAndDelete(req.params.id);
+    
+    if (!deletedOrder) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    res.json({ message: 'Order deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting order:', error);
+    res.status(500).json({ error: 'Failed to delete order' });
   }
 });
 
